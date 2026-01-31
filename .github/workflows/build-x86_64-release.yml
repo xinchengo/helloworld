@@ -1,0 +1,98 @@
+name: Build x86_64 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Packages to build (space-separated, or leave empty for all)'
+        required: false
+        default: ''
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build x86_64 Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine packages to build
+        run: |
+          if [ -n "${{ github.event.inputs.packages }}" ]; then
+            PACKAGES="${{ github.event.inputs.packages }}"
+          else
+            # Build all packages by detecting directories with Makefiles
+            PACKAGES=$(find . -maxdepth 2 -name Makefile -not -path "./.git/*" | \
+              grep -v ".*/src/Makefile" | \
+              sed -e 's@./\(.*\)/Makefile@\1@' | \
+              sort | tr '\n' ' ')
+          fi
+          
+          # Trim whitespace
+          PACKAGES=$(echo $PACKAGES | xargs)
+          
+          echo "Building packages: $PACKAGES"
+          echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
+
+      - name: Build
+        uses: immortalwrt/gh-action-sdk@v7
+        env:
+          ARCH: x86_64
+          FEEDNAME: packages_ci
+          V: s
+          target: x86-64
+          packages: ${{ env.PACKAGES }}
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p release
+          cp bin/packages/x86_64/packages_ci/*.ipk release/ 2>/dev/null || true
+          
+          # Generate package list
+          cd release
+          echo "Built packages:" > PACKAGES.txt
+          
+          IPK_COUNT=$(find . -maxdepth 1 -name "*.ipk" | wc -l)
+          if [ "$IPK_COUNT" -eq 0 ]; then
+            echo "WARNING: No IPK packages were built!"
+            echo "  No packages found" >> PACKAGES.txt
+          else
+            for f in *.ipk; do
+              if [ -f "$f" ]; then
+                echo "  $f ($(du -h "$f" | cut -f1))" >> PACKAGES.txt
+              fi
+            done
+          fi
+          
+          cat PACKAGES.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-packages
+          path: release/
+
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.ipk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
